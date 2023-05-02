@@ -564,7 +564,11 @@ checkLabels (Cmnt (Just i) _ _:s:ls) m n
     =  checkN i 1 65_535 (Err197InvLabel s)
     *> if M.member i m
         then Left (Err182MulLabel s) else checkLabels (s:ls) (M.insert i n m) (n+1)
-checkLabels (Stmt (Just i) q p s st:ls) m n  -- temporarily sends current statement in error instead of next. Not ideal
+    {- | Error messages here inclued the current statment rather than the next one. This
+    is because the next statment cannot be calculated consistently, and `checkErrStmt`
+    was developed after this and has yet to be implemented here.
+    -}
+checkLabels (Stmt (Just i) q p s st:ls) m n
     =  checkN i 1 65_535 (Err197InvLabel (Stmt (Just i) q p s st))
     *> if M.member i m
         then Left (Err182MulLabel (Stmt (Just i) q p s st)) else checkLabels ls (M.insert i n m) (n+1)
@@ -621,20 +625,31 @@ type StashVar = M.Map Integer [Integer]
 -- | `StashArr` maps `Integer` array names to stacks of stashed `Array` values.
 type StashArr = M.Map Integer [Array]
 
-{- | `IgnMem` is used for both variables and arrays. It maps variable names to Booleans of
-whether a variable is ignored. 
+{- | `IgnMem` is used for both variables and arrays. It maps variable names to `Bool`s of
+whether a variable is ignored. `True` indicates that a variable is ignored.
 -}
 type IgnMem = M.Map Integer Bool
 
+{- | The `World` keeps track of all the memory used in interpreting. That includes
+current variable values, stashed values, the relationship of labels to line numbers,
+currently ignored values, and the stack of line numbers nexted from. Originally I was
+also keeping track of a queue of input and output strings, but I realized that I had to
+take input and give output at runtime, as it was impossible to compute ahead of time how
+many times I would need to take input.
+
+`Vars`, `Stashes`, and `Ignored` have been abstracted out into their own ADTs to make code
+more readable.
+-}
 data World where
-    W  :: Vars       -- memory
-        -> Stashes   -- stashes
-        -> Mem       -- label to line map
-        -> Ignored    -- ignored vars
-        -> [Integer] -- Nexting stack
+    W  :: Vars       -- Variable values.
+        -> Stashes   -- Variable stashes.
+        -> Mem       -- Map of labels to line numbers.
+        -> Ignored   -- Ignored variables.
+        -> [Integer] -- Nexting stack.
         -> World
     deriving Show
 
+-- | `Vars` keeps track of current variable values for the four types.
 data Vars where
     V :: Mem         -- 16 bit memory
         -> Mem       -- 32 bit memory
@@ -643,6 +658,7 @@ data Vars where
         -> Vars
     deriving Show
 
+-- | `Stashes` tracks stashed values for the four types of variables.
 data Stashes where
     S :: StashVar    -- stashed 16 bit memory
         -> StashVar  -- stashed 32 bit memory
@@ -651,6 +667,7 @@ data Stashes where
         -> Stashes
     deriving Show
 
+-- | `Ignored` tracks whether the the variables are ignored.
 data Ignored where
     I :: IgnMem       -- ignored 16 bit variables
         -> IgnMem     -- ignored 32 bit variables
@@ -659,20 +676,50 @@ data Ignored where
         -> Ignored
     deriving Show
 
+{- | The arrays are implemented by having an ADT with two constructors:
+
+The `Single` constructor constructs an `Integer` array using a map of integer values and a
+single integer value representing the size of the array. Array sizes are checked at
+runtime. This constructor represents a one-dimesional array.
+
+The `Multi` constuctor constructs an array of `Array`s using a map of `Integer`s to
+`Array`s and a stack of `Integer` values, where the top one is the value of the current
+dimension of the array, and the rest of the values are the subsequent nested arrays. This 
+stack allows the arrays to be created as they are inserted, because the size is known
+before the array is created. The `Multi` constructor represents the higher dimensions of a
+multi dimesnional array.
+
+Arrays are implemented recursively, despite the fact that there are probably better ways
+to implement them. This method was chosen because it seemed more inline with the Intercal
+design philosophy.
+-}
 data Array where
     Multi  :: [Integer] -> ArrMem -> Array
     Single :: Integer -> Mem -> Array
     deriving Show
 
+{- | `composeIO` is a function to do the same thing as `(>>=)` that works inside IO
+functions. I am not sure if there is something that already does this, or a preferred way
+to do this in Haskell, but I couldn't find one.
+-}
 composeIO :: Either e a -> (a -> IO (Either e b)) -> IO (Either e b)
 composeIO (Right a) f  = f a
 composeIO (Left err) _ = return (Left err)
 
+{- | `randomRIOERR` takes returns a random number between 0 and 1000. The lower bound is 
+inclusive, and the upper bound is inclusive if the `Bool` parameter is True, and otherwise
+exclusive. The `Bool` represents whether random compiler errors are enabled, and if the
+generator generates exactly 1000, the interpreter throws a random compiler error.
+-}
 randomRIOERR :: Bool -> IO Integer
 randomRIOERR True  = randomRIO (0, 1_000)
 randomRIOERR False = randomRIO (0, 999)
 
-
+{- | `rndPercent` uses the random number generator to determine whether a statement with
+the percent quantifier should be run. It is also responsible for throwing the random
+compiler error. This function is run for every statement, so the error could be thrown on
+any line.
+-}
 rndPercent :: World -> Bool -> Maybe Integer -> IO (Either (World, Error) Bool)
 rndPercent w b p = do
     r <- randomRIOERR b
@@ -682,6 +729,21 @@ rndPercent w b p = do
         Just pcnt -> return (Right (r < pcnt * 10))
         Nothing   -> return (Right True)
 
+{- | `interpProg` is the main interpreter function. It is responible for checking whether
+a line is abstained, as well as raising an error if it encounters a non-abstained comment.
+The `interpProg` function also calls `interpStmtOp` which does the heavy lifting of
+interpretation.
+
+Note that `interpProg`, `interpStmtOp` and many of thier sub-functions are IO types. This
+is becuase input, output, and random number generation are not pure, and are needed in
+some of the sub-functions.
+
+It is important to note what the two `Prog` arguments are here, as it can be confusing.
+The first one, p1, is the current statement and all the following ones yet to be
+interpreted. The second one, p1, is all of the previously interpreted statements, with the
+top one being the first line in the program. This convention is maintained throughout the
+program.
+-}
 interpProg :: World -> Bool -> Prog -> Prog -> Integer -> IO (Either (World, Error) World)
 interpProg w _ [] _ _ = return (Left (w, Err633ProgEnd))
 interpProg w b (Stmt l True p sop str:p1) p2 ln  = interpProg w b p1 (p2++[Stmt l True p sop str]) (ln+1)
@@ -694,6 +756,9 @@ interpProg w b (Cmnt l True s:p1) p2 ln      = interpProg w b p1 (p2++[Cmnt l Tr
 interpProg w _ (Cmnt l q s:p1) _ _            = getErrStmt w p1
     `composeIO` \stmt -> return (Left (w, Err000Undecode (Cmnt l q s) stmt))
 
+{- | `interpStmtOp` does the heavy lifting of the interpreter, and uses pattern matching
+interpret the different statment operations.
+-}
 interpStmtOp :: StmtOp -> World -> Bool -> Prog -> Prog -> Integer -> IO (Either (World, Error) World)
 interpStmtOp GiveUp w _ _ _ _ = return (Right w)
 
