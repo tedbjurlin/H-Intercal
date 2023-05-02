@@ -574,47 +574,56 @@ checkLabels (Cmnt (Just i) q s:ls) m n
         then Left (Err182MulLabel (Cmnt (Just i) q s)) else checkLabels ls (M.insert i n m) (n+1)
 checkLabels (_:ls) m n = checkLabels ls m (n+1)
 
+-- | `checkExp` calls `checkExpH` with the standard error for invalid variables.
 checkExp :: Exp -> Stmt -> Either Error ()
 checkExp e s = checkExpH e (Err200InvVar s)
 
+{- | `checkExpH` is checks the values of variable and array names, and recursively checks
+the expressions in `Sub`, `Una`, and `Bin`.
+-}
 checkExpH :: Exp ->  Error -> Either Error ()
 checkExpH (Array16 i) err   = checkN i 1 65_535 err
 checkExpH (Array32 i) err   = checkN i 1 65_535 err
 checkExpH (Var16 i) err     = checkN i 1 65_535 err
 checkExpH (Var32 i) err     = checkN i 1 65_535 err
-checkExpH (Const i) err     = checkN i 0 65_535 err
+checkExpH (Const _) _       = Right () -- constants will be checked during runtime
 checkExpH (Sub e el) err    = checkExpH e err *> checkExpListH el err
 checkExpH (Una _ e) err     = checkExpH e err
 checkExpH (Bin _ e1 e2) err = checkExpH e1 err *> checkExpH e2 err
 
+-- | `checkExpList` runs `checkExpListH` with a default error
 checkExpList :: [Exp] -> Stmt -> Either Error ()
 checkExpList el s = checkExpListH el (Err200InvVar s)
 
+-- | `checkExpList` applies `checkExpH` to a list of expressions, and takes an error.
 checkExpListH :: [Exp] -> Error -> Either Error ()
 checkExpListH [] _     = Right ()
 checkExpListH (e:ls) err = checkExpH e err *> checkExpListH ls err
 
+-- | `checkN` checks if a value is in the given range, and returns the given error.
 checkN :: Integer -> Integer -> Integer -> Error -> Either Error ()
 checkN i low high e = if (low <= i) && (i <= high) then Right () else Left e
 
+-- | `checkProg` composes `checkLabels` with `checkSemantics`, and runs both.
 checkProg :: Prog -> Either Error (Mem, Bool)
 checkProg p = checkLabels p M.empty 0
     >>= \m -> checkSemantics p m False
         >>= \b -> Right (m, b)
 
-testCheck :: String -> String
-testCheck s = case runParser pIntercal "" s of
-    (Right prog) -> show (checkProg prog)
-    (Left err) -> show err
-
 ---------------------------------------- Execution ---------------------------------------
 
+-- | `ArrMem` maps `Integer` array names to `Array` values.
 type ArrMem = M.Map Integer Array
 
+-- | `StashVar` maps `Integer` variable names to stacks of stashed `Integer` values.
 type StashVar = M.Map Integer [Integer]
 
+-- | `StashArr` maps `Integer` array names to stacks of stashed `Array` values.
 type StashArr = M.Map Integer [Array]
 
+{- | `IgnMem` is used for both variables and arrays. It maps variable names to Booleans of
+whether a variable is ignored. 
+-}
 type IgnMem = M.Map Integer Bool
 
 data World where
