@@ -1,0 +1,32 @@
+cabal-version:      2.4
+name:               H-Intercal
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            Apache-2.0
+license-file:       LICENSE
+author:             Ted Bjurlin
+maintainer:         teddybjurlin@gmail.com
+-- copyright:
+category:           Language
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+common warnings
+    ghc-options: -Wall
+
+executable H-Intercal
+    import:           warnings
+    main-is:          HIntercal.hs
+    -- other-modules:
+    -- other-extensions:
+    build-depends:
+        base ^>=4.16.4.0,
+        megaparsec >=9.2.2,
+        containers,
+        parser-combinators,
+        split,
+        random,
+        cmdargs
+    default-language: Haskell2010
