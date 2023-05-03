@@ -842,46 +842,21 @@ interpStmtOp (Calc v e) (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) b (
             (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns
             , Err000Undecode s stmt))
 
-
-interpStmtOp (CalcDim arr el) (W (V m1 m2 am1 am2) st m3 iv ns) b (s:p1) p2 idx = case arr of
-    (Array16 n) -> interpExpList (W (V m1 m2 am1 am2) st m3 iv ns) p1 el
-        `composeIO` \il -> case (il, 0 `elem` il) of
-            (_, True) -> getErrStmt (W (V m1 m2 am1 am2) st m3 iv ns) p1
-                `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 iv ns, Err240ArrDim0 stmt))
-            ([], _) -> getErrStmt (W (V m1 m2 am1 am2) st m3 iv ns) p1
-                `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 iv ns, Err240ArrDim0 stmt))
-            ([m], _) -> interpProg
-                (W (V m1 m2 (M.insert n (Single m M.empty) am1) am2) st m3 iv ns)
-                b
-                p1
-                (p2++[s])
-                (idx+1)
-            _ -> interpProg
-                (W (V m1 m2 (M.insert n (Multi il M.empty) am1) am2) st m3 iv ns)
-                b
-                p1
-                (p2++[s])
-                (idx+1)
-    (Array32 n) -> interpExpList (W (V m1 m2 am1 am2) st m3 iv ns) p1 el
-        `composeIO` \il -> case (il, 0 `elem` il) of
-            (_, True) -> getErrStmt (W (V m1 m2 am1 am2) st m3 iv ns) p1
-                `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 iv ns, Err240ArrDim0 stmt))
-            ([], _)   -> getErrStmt (W (V m1 m2 am1 am2) st m3 iv ns) p1
-                `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 iv ns, Err240ArrDim0 stmt))
-            ([m], _)  -> interpProg
-                (W (V m1 m2 am1 (M.insert n (Single m M.empty) am2)) st m3 iv ns)
-                b
-                p1
-                (p2++[s])
-                (idx+1)
-            _         -> interpProg
-                (W (V m1 m2 am1 (M.insert n (Multi il M.empty) am2)) st m3 iv ns)
-                b
-                p1
-                (p2++[s])
-                (idx+1)
-    _           -> getErrStmt (W (V m1 m2 am1 am2) st m3 iv ns) p1
-        `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 iv ns, Err000Undecode s stmt))
+{- | `CalcDim` dimensions an array. This is done by calling the `calcDim` function on the
+appropriate memory map. Similarly to `Calc` patterns that do not match an array raise an
+undecodable statement error.
+-}
+interpStmtOp (CalcDim arr el) (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) b (s:p1) p2 idx = case arr of
+    (Array16 n) -> calcDim (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 n el iam1 am1
+        `composeIO` \am1' -> interpProg (W (V m1 m2 am1' am2) st m3 (I im1 im2 iam1 iam2) ns)
+            b p1 (p2++[s]) (idx+1)
+    (Array32 n) -> calcDim (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 n el iam2 am2
+        `composeIO` \am2' -> interpProg (W (V m1 m2 am1 am2') st m3 (I im1 im2 iam1 iam2) ns)
+            b p1 (p2++[s]) (idx+1)
+    _           -> getErrStmt (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1
+        `composeIO` \stmt -> return 
+            (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns
+            , Err000Undecode s stmt))
 
 interpStmtOp (Forget e) w b (s:p1) p2 idx = interpExp w p1 e
     `composeIO` \(i, _) -> getStack w i
