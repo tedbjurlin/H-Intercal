@@ -571,11 +571,13 @@ checkLabels (Cmnt (Just i) _ _:s:ls) m n
 checkLabels (Stmt (Just i) q p s st:ls) m n
     =  checkN i 1 65_535 (Err197InvLabel (Stmt (Just i) q p s st))
     *> if M.member i m
-        then Left (Err182MulLabel (Stmt (Just i) q p s st)) else checkLabels ls (M.insert i n m) (n+1)
+        then Left (Err182MulLabel (Stmt (Just i) q p s st))
+        else checkLabels ls (M.insert i n m) (n+1)
 checkLabels (Cmnt (Just i) q s:ls) m n
     =  checkN i 1 65_535 (Err197InvLabel (Cmnt (Just i) q s))
     *> if M.member i m
-        then Left (Err182MulLabel (Cmnt (Just i) q s)) else checkLabels ls (M.insert i n m) (n+1)
+        then Left (Err182MulLabel (Cmnt (Just i) q s))
+        else checkLabels ls (M.insert i n m) (n+1)
 checkLabels (_:ls) m n = checkLabels ls m (n+1)
 
 -- | `checkExp` calls `checkExpH` with the standard error for invalid variables.
@@ -639,6 +641,12 @@ many times I would need to take input.
 
 `Vars`, `Stashes`, and `Ignored` have been abstracted out into their own ADTs to make code
 more readable.
+
+Where it is used in the interpreter, the `World` looks like this when collapsed:
+`W v st m3 iv ns`
+
+And this when expanded:
+`W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) m3 (I im1 im2 iam1 iam2) ns`
 -}
 data World where
     W  :: Vars       -- Variable values.
@@ -743,6 +751,9 @@ The first one, p1, is the current statement and all the following ones yet to be
 interpreted. The second one, p1, is all of the previously interpreted statements, with the
 top one being the first line in the program. This convention is maintained throughout the
 program.
+
+The `Integer` argument is the current line number and the `Bool` indicates wheter random
+compiler errors have been deactivated.
 -}
 interpProg :: World -> Bool -> Prog -> Prog -> Integer -> IO (Either (World, Error) World)
 interpProg w _ [] _ _ = return (Left (w, Err633ProgEnd))
@@ -758,16 +769,36 @@ interpProg w _ (Cmnt l q s:p1) _ _            = getErrStmt w p1
 
 {- | `interpStmtOp` does the heavy lifting of the interpreter, and uses pattern matching
 interpret the different statment operations.
+
+It takes the same arguments as `interpProg` with the addition of the current `Stmt`.
 -}
-interpStmtOp :: StmtOp -> World -> Bool -> Prog -> Prog -> Integer -> IO (Either (World, Error) World)
+interpStmtOp :: StmtOp -> World -> Bool -> Prog -> Prog -> Integer
+    -> IO (Either (World, Error) World)
+
+{- | `GiveUp` ends program execution without errors. Note that this is the only way to do
+this, and all other methods of ending execution will raise an error.
+-}
 interpStmtOp GiveUp w _ _ _ _ = return (Right w)
 
+{- | `Resume` and the following `Next` statement, are the reason that we have to keep
+trakc of p2, the previously executed statements. This allows us to join p1 and p2 into
+a the full program, and use `splitAt` to the program at the location we are moving
+execution to.
+
+This location is obtained from the `getStack` function, which pops items off the stack and
+returns the last one.
+-}
 interpStmtOp (Resume e) w b p1 p2 _ = interpExp w p1 e
     `composeIO` \(i, _) -> getStack w i
         `composeIO` \(w1, idx) -> case splitAt (fromIntegral idx) (p2 ++ p1) of
             (p2', s' : p1') -> interpProg w1 b p1' (p2' ++ [s']) (idx + 1)
             (p2', [])       -> interpProg w1 b [] p2' (idx + 1)
 
+{- | `Next` behaves similarly to `Resume`, except it instead adds the location that
+execution was at before the next statement to the stack and moves to the indicated label.
+It also handles the `Next` stack overflow, where an error is thrown if the `Next` stack
+has 80 or more items.
+-}
 interpStmtOp (Next l) (W v s m3 iv ns) b p1 p2 idx = case M.lookup l m3 of
     Just idx1 ->
         if length ns >= 79
@@ -776,80 +807,41 @@ interpStmtOp (Next l) (W v s m3 iv ns) b p1 p2 idx = case M.lookup l m3 of
             (p2', [])  -> interpProg (W v s m3 iv (idx:ns)) b [] p2' idx1
             (p2', p1') -> interpProg (W v s m3 iv (idx:ns)) b p1' p2' idx1
     Nothing  -> return (Left (W v s m3 iv ns, Err129UndefLabel))
--- ignore not implemented for calc or calcdim
+
+{- | `Calc` statements will intepret the given expression, and assign it to the given
+variable. The only exception to this is if the variable is ignored, in which case
+the `Calc` statement will do nothing.
+-}
 interpStmtOp (Calc v e) (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) b (s:p1) p2 idx = case v of
-    (Var16 n) -> if fromMaybe False (M.lookup n im1)
-        then interpProg (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns)
-            b p1 (p2++[s]) (idx+1)
-        else interpExp (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 e
-            `composeIO` \(val, _) ->
-                if val > 65_535
-                then getErrStmt (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1
-                    `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns, Err275WrongSpot stmt))
-                else interpProg
-                    (W (V (M.insert n val m1) m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns)
-                    b
-                    p1
-                    (p2++[s])
-                    (idx+1)
-    (Var32 n) -> if fromMaybe False (M.lookup n im2)
-        then interpProg (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns)
-            b p1 (p2++[s]) (idx+1)
-        else interpExp (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 e
-            `composeIO` \(val, _) ->
-                if val > 4_294_967_295
-                then getErrStmt (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1
-                    `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns, Err533TooBig stmt))
-                else interpProg
-                    (W (V m1 (M.insert n val m2) am1 am2) st m3 (I im1 im2 iam1 iam2) ns)
-                    b
-                    p1
-                    (p2++[s])
-                    (idx+1)
-    (Sub (Array16 n) el) -> if fromMaybe False (M.lookup n iam1)
-        then interpProg (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns)
-            b p1 (p2++[s]) (idx+1)
-        else interpExp (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 e
-            `composeIO` \(val, _) ->
-                if val > 65_535
-                then getErrStmt (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1
-                    `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns, Err275WrongSpot stmt))
-                else interpExpList (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 el
-                    `composeIO` \il -> case M.lookup n am1 of
-                        Just arr -> insertArray
-                            (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 arr val il
-                                `composeIO` \arr1 -> interpProg
-                                    (W (V m1 m2 (M.insert n arr1 am1) am2) st m3 (I im1 im2 iam1 iam2) ns)
-                                    b
-                                    p1
-                                    (p2++[s])
-                                    (idx+1)
-                        Nothing -> getErrStmt (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1
-                            `composeIO` \stmt -> return (Left
-                                (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns, Err200InvVar stmt))
-    (Sub (Array32 n) el) -> if fromMaybe False (M.lookup n iam2)
-        then interpProg (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns)
-            b p1 (p2++[s]) (idx+1)
-        else interpExp (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 e
-            `composeIO` \(val, _) ->
-                if val > 4_294_967_295
-                then getErrStmt (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1
-                    `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns, Err533TooBig stmt))
-                else interpExpList (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 el
-                    `composeIO` \il -> case M.lookup n am2 of
-                        Just arr -> insertArray
-                            (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 arr val il
-                                `composeIO` \arr1 -> interpProg
-                                    (W (V m1 m2 am1 (M.insert n arr1 am2)) st m3 (I im1 im2 iam1 iam2) ns)
-                                    b
-                                    p1
-                                    (p2++[s])
-                                    (idx+1)
-                        Nothing -> getErrStmt (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1
-                            `composeIO` \stmt -> return (Left
-                                (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns, Err200InvVar stmt))
+    
+    {- | When calculating variables, the `calcVar` function is used to cut down on
+    repeated code.
+    -}
+    (Var16 n) -> calcVar (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 n 65_535
+        e im1 m1 `composeIO` \m1' -> interpProg
+            (W (V m1' m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) b p1 (p2++[s]) (idx+1)
+    (Var32 n) -> calcVar (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1 n
+        4_294_967_295 e im2 m2 `composeIO` \m2' -> interpProg
+            (W (V m1 m2' am1 am2) st m3 (I im1 im2 iam1 iam2) ns) b p1 (p2++[s]) (idx+1)
+    
+    {- | Similarly, `calcArr` is used to calculate array insertion.
+    -}
+    (Sub (Array16 n) el) -> calcArr (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns)
+        p1 n el 65_535 e iam1 am1 `composeIO` \am1' -> interpProg
+            (W (V m1 m2 am1' am2) st m3 (I im1 im2 iam1 iam2) ns) b p1 (p2++[s]) (idx+1)
+    (Sub (Array32 n) el) -> calcArr (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns)
+        p1 n el 4_294_967_295 e iam2 am2 `composeIO` \am2' -> interpProg
+            (W (V m1 m2 am1 am2') st m3 (I im1 im2 iam1 iam2) ns) b p1 (p2++[s]) (idx+1)
+    
+    {- | If a pattern is encountered that does not match a variable type, then it will
+    raise an undecodable statement error. This should be completely prevented by the
+    parser, so if this error is raised here something is going wrong up there.
+    -}
     _ -> getErrStmt (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p1
-        `composeIO` \stmt -> return (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns, Err000Undecode s stmt))
+        `composeIO` \stmt -> return
+            (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns
+            , Err000Undecode s stmt))
+
 
 interpStmtOp (CalcDim arr el) (W (V m1 m2 am1 am2) st m3 iv ns) b (s:p1) p2 idx = case arr of
     (Array16 n) -> interpExpList (W (V m1 m2 am1 am2) st m3 iv ns) p1 el
@@ -932,6 +924,45 @@ interpStmtOp (Output el) w b (s:p1) p2 idx = do
 
 interpStmtOp _ w _ [] _ _ = return (Left (w, Err633ProgEnd))
 
+calcVar :: World -> Prog -> Integer -> Integer -> Exp -> IgnMem -> Mem
+    -> Either (World, Error) Mem
+calcVar w p1 v mx e im m = if fromMaybe False (M.lookup v im)
+        then Right m
+        else interpExp w p1 e >>= \(val, _) ->
+            if val > mx
+            then getErrStmt w p1 >>= \stmt -> Left (w, Err275WrongSpot stmt)
+            else Right (M.insert v val m)
+
+calcArr :: World -> Prog -> Integer -> [Exp] -> Integer -> Exp -> IgnMem -> ArrMem
+    -> Either (World, Error) ArrMem
+calcArr w p1 v el mx e im am = if fromMaybe False (M.lookup v im)
+        then Right am
+        else interpExp w p1 e
+            >>= \(val, _) ->
+                if val > mx
+                then getErrStmt w p1
+                    >>= \stmt -> Left (w, Err275WrongSpot stmt)
+                else interpExpList w p1 el
+                    >>= \il -> case M.lookup v am of
+                        Just arr -> insertArray
+                            w p1 arr val il
+                                >>= \arr1 -> Right (M.insert v arr1 am)
+                        Nothing -> getErrStmt w p1
+                            >>= \stmt -> Left (w, Err200InvVar stmt)
+
+calcDim :: World -> Prog -> Integer -> [Exp] -> IgnMem -> ArrMem
+    -> Either (World, Error) ArrMem
+calcDim w p1 arr el im am = if fromMaybe False (M.lookup arr im)
+        then Right am
+        else interpExpList w p1 el
+            >>= \il -> case (il, 0 `elem` il) of
+                (_, True) -> getErrStmt w p1
+                    >>= \stmt -> Left (w, Err240ArrDim0 stmt)
+                ([], _) -> getErrStmt w p1
+                    >>= \stmt -> Left (w, Err240ArrDim0 stmt)
+                ([m], _) -> Right (M.insert arr (Single m M.empty) am)
+                _ -> Right (M.insert arr (Multi il M.empty) am)
+
 insertArray :: World -> Prog -> Array -> Integer -> [Integer] -> Either (World, Error) Array
 insertArray w p _ _ []    = getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 insertArray w p (Single l m) val [idx] =
@@ -993,7 +1024,7 @@ stashExpList (W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) m3 iv ns) (Array32 n:ls)
             ls s p
 stashExpList w _ s p = getErrStmt w p >>= \st -> Left (w, Err000Undecode s st)
 
-stashVar :: Integer -> M.Map Integer Integer -> M.Map Integer [Integer] -> Either (World, Error) (M.Map Integer [Integer])
+stashVar :: Integer -> Mem -> M.Map Integer [Integer] -> Either (World, Error) (M.Map Integer [Integer])
 stashVar n m1 sm1 = case M.lookup n m1 of
     Just var -> case M.lookup n sm1 of
         Just il -> Right (M.insert n (var:il) sm1)
@@ -1002,7 +1033,7 @@ stashVar n m1 sm1 = case M.lookup n m1 of
         Just il  -> Right (M.insert n (0:il) sm1)
         Nothing -> Right (M.insert n [0] sm1)
 
-stashArr :: Integer -> M.Map Integer Array -> M.Map Integer [Array] -> Either (World, Error) (M.Map Integer [Array])
+stashArr :: Integer -> ArrMem -> M.Map Integer [Array] -> Either (World, Error) (M.Map Integer [Array])
 stashArr n m1 sm1 = case M.lookup n m1 of
     Just var -> case M.lookup n sm1 of
         Just il -> Right (M.insert n (var:il) sm1)
@@ -1034,7 +1065,7 @@ retrieveExpList (W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) m3 (I im1 im2 iam1 ia
             ls s p
 retrieveExpList w _ s p = getErrStmt w p >>= \st -> Left (w, Err000Undecode s st)
 
-retrieveVar :: World -> Prog -> Integer -> M.Map Integer [b] -> M.Map Integer b -> M.Map Integer Bool -> Either (World, Error) (M.Map Integer b, M.Map Integer [b])
+retrieveVar :: World -> Prog -> Integer -> M.Map Integer [b] -> M.Map Integer b -> IgnMem -> Either (World, Error) (M.Map Integer b, M.Map Integer [b])
 retrieveVar w p n sm1 m1 im1 = 
     if fromMaybe False (M.lookup n im1)
     then Right (m1, sm1)
