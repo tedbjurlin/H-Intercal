@@ -858,56 +858,79 @@ interpStmtOp (CalcDim arr el) (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) n
             (Left (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns
             , Err000Undecode s stmt))
 
+{- | `Forget` uses `getStack` got get `i` items off of the stack, and discards them.
+Unlike `Resume` it does not attempt to move to a different line.
+-}
 interpStmtOp (Forget e) w b (s:p1) p2 idx = interpExp w p1 e
     `composeIO` \(i, _) -> getStack w i
         `composeIO` \ (w1, _) -> interpProg w1 b p1 (p2++[s]) (idx + 1)
 
+{- | The following four operations call their respective functions to perform their
+operation on each variable in a list.
+-}
 interpStmtOp (Stash el) w b (s:p1) p2 idx = stashExpList w el s p1
     `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx + 1)
-
 interpStmtOp (Retrieve el) w b (s:p1) p2 idx = retrieveExpList w el s p1
     `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx+1)
-
 interpStmtOp (Ignore el) w b (s:p1) p2 idx = ignoreVarList w el s p1
     `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx+1)
-
 interpStmtOp (Remember el) w b (s:p1) p2 idx = rememberVarList w el s p1
     `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx+1)
 
+{- | The following two operations take a list of gerunds, and call `setAbstainGerundList`
+on the list, setting the gerunds to be either reinstated or abstained.
+-}
 interpStmtOp (Abstain gl) w b (s:p1) p2 idx = (\(p1', p2') -> interpProg w b p1' p2' (idx+1))
     (setAbstainGerundList gl True p1 (p2++[s]))
+interpStmtOp (Reinstate gl) w b (s:p1) p2 idx = (\(p1', p2') -> interpProg w b p1' p2' (idx+1))
+    (setAbstainGerundList gl False p1 (p2++[s]))
 
+{- | The following two operations take a single line label and call their respective
+functions to either abstain or reinstate that line.
+-}
 interpStmtOp (AbstainL la) w b (s:p1) p2 idx =
     abstainLabel w la (p2++[s]++p1) p1
         `composeIO` \p' -> (\(p2', p1') -> interpProg w b p1' p2' (idx+1))
             (splitAt (fromIntegral (idx+1)) p')
-
-interpStmtOp (Reinstate gl) w b (s:p1) p2 idx = (\(p1', p2') -> interpProg w b p1' p2' (idx+1))
-    (setAbstainGerundList gl False p1 (p2++[s]))
-
 interpStmtOp (ReinstateL la) w b (s:p1) p2 idx =
     reinstateLabel w la (p2++[s]++p1) p1
         `composeIO` \p' -> (\(p2', p1') -> interpProg w b p1' p2' (idx+1))
             (splitAt (fromIntegral (idx+1)) p')
 
+{- | The `Input` operation takes a list of variables and calls `takeInputList` to take
+input for each variable.
+-}
 interpStmtOp (Input el) w b (s:p1) p2 idx = do
     we <- takeInputList w p1 el
     we `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx+1)
 
+{- | The `Output` operation reads out the values of each variable in the list by calling
+`writeOutputList`.
+-}
 interpStmtOp (Output el) w b (s:p1) p2 idx = do
     writeOutputList w p1 el >> interpProg w b p1 (p2++[s]) (idx+1)
 
+{- | An empty program raises the program end error.
+-}
 interpStmtOp _ w _ [] _ _ = return (Left (w, Err633ProgEnd))
 
-calcVar :: World -> Prog -> Integer -> Integer -> Exp -> IgnMem -> Mem
-    -> Either (World, Error) Mem
+{- | `calcVar` assigns the input expression to the given variable memory.
+It skips ignored variables and raises an error if the variable is of the wrong type.
+-}
+calcVar :: World -> Prog -> Integer -> Integer -> Exp -> IgnMem -> Mem -> Either (World, Error) Mem
 calcVar w p1 v mx e im m = if fromMaybe False (M.lookup v im)
         then Right m
         else interpExp w p1 e >>= \(val, _) ->
             if val > mx
-            then getErrStmt w p1 >>= \stmt -> Left (w, Err275WrongSpot stmt)
+            then getErrStmt w p1 >>= \stmt -> if mx == 65_535
+                then Left (w, Err275WrongSpot stmt)
+                else Left (w, Err533TooBig stmt)
             else Right (M.insert v val m)
 
+{- | Similarly, `calcArr` assigns the input expression to the given array memory. It does
+this by taking the array out of memory and inserting the value into the array. It also
+skips ignored variables and raises an error if the value is too large.
+-}
 calcArr :: World -> Prog -> Integer -> [Exp] -> Integer -> Exp -> IgnMem -> ArrMem
     -> Either (World, Error) ArrMem
 calcArr w p1 v el mx e im am = if fromMaybe False (M.lookup v im)
@@ -916,7 +939,9 @@ calcArr w p1 v el mx e im am = if fromMaybe False (M.lookup v im)
             >>= \(val, _) ->
                 if val > mx
                 then getErrStmt w p1
-                    >>= \stmt -> Left (w, Err275WrongSpot stmt)
+                    >>= \stmt -> if mx == 65_535
+                        then Left (w, Err275WrongSpot stmt)
+                        else Left (w, Err533TooBig stmt)
                 else interpExpList w p1 el
                     >>= \il -> case M.lookup v am of
                         Just arr -> insertArray
@@ -925,8 +950,10 @@ calcArr w p1 v el mx e im am = if fromMaybe False (M.lookup v im)
                         Nothing -> getErrStmt w p1
                             >>= \stmt -> Left (w, Err200InvVar stmt)
 
-calcDim :: World -> Prog -> Integer -> [Exp] -> IgnMem -> ArrMem
-    -> Either (World, Error) ArrMem
+{- | `calcDim` creates a new array that does not have any dimensions of 0 and inserts
+it into the give array memory.
+-}
+calcDim :: World -> Prog -> Integer -> [Exp] -> IgnMem -> ArrMem -> Either (World, Error) ArrMem
 calcDim w p1 arr el im am = if fromMaybe False (M.lookup arr im)
         then Right am
         else interpExpList w p1 el
@@ -938,6 +965,16 @@ calcDim w p1 arr el im am = if fromMaybe False (M.lookup arr im)
                 ([m], _) -> Right (M.insert arr (Single m M.empty) am)
                 _ -> Right (M.insert arr (Multi il M.empty) am)
 
+{- | `insertArray` recursively climbs down an array by the list of indexes until it
+reaches the end of this list of indexes, then inserts the integer at the last index.
+If the last index is not a `Single` array, or it reaches a `Single` array before the end
+of the list of indexes, an array is raised. An error is also raised if the index is out of
+the bounds of the array.
+
+Due to the way that the `Array` type is implemented, when an array is created, the values
+and sub-arrays are not initialized. Therefore, when `insertArray` encounters an
+uninitialized value or array, it sets it to the default value, 0.
+-}
 insertArray :: World -> Prog -> Array -> Integer -> [Integer] -> Either (World, Error) Array
 insertArray w p _ _ []    = getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 insertArray w p (Single l m) val [idx] =
@@ -957,6 +994,10 @@ insertArray w p (Multi (l1:ll) m) val (idx:idl) =
     else getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 insertArray w p _ _ _ = getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 
+{- | `retrieveArray` retrieves a value from an array by recursively descending the array.
+It will raise an error if the array has not been dimensioned or if the list of indexes
+does not match the dimesnions of the array.
+-}
 retrieveArray :: World -> Prog -> Array -> [Integer] -> Either (World, Error) Integer
 retrieveArray w p _ [] = getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 retrieveArray w p (Single l m) [idx] =
@@ -975,6 +1016,9 @@ retrieveArray w p (Multi (l1:_) m) (idx:idl) =
     else getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 retrieveArray w p _ _ = getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 
+{- | `stashExpList` calls `stashExp` on the correct memory for the type of each variable
+in the give list of variables.
+-}
 stashExpList :: World -> [Exp] -> Stmt -> Prog -> Either (World, Error) World
 stashExpList w [] _ _ = Right w
 stashExpList (W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) m3 iv ns) (Var16 n:ls) s p =
@@ -999,6 +1043,15 @@ stashExpList (W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) m3 iv ns) (Array32 n:ls)
             ls s p
 stashExpList w _ s p = getErrStmt w p >>= \st -> Left (w, Err000Undecode s st)
 
+{- | `stashVar` stashes non-array variables. It takes the variable name, the var memory
+and the stash memory and returns the memory with the stashed variable.
+
+A behavior of stash that was not defined in the Intercal refernce manual but is necessary
+for the functioning of the standard library, is that if an attempt is made to stach an
+undefined variable, a default value will instead be inserted. I assume that this is
+because in the architecture that Intercal was designed for, every variable name would be
+assigned to a default value, rather than being undefined.
+-}
 stashVar :: Integer -> Mem -> M.Map Integer [Integer] -> Either (World, Error) (M.Map Integer [Integer])
 stashVar n m1 sm1 = case M.lookup n m1 of
     Just var -> case M.lookup n sm1 of
@@ -1008,6 +1061,13 @@ stashVar n m1 sm1 = case M.lookup n m1 of
         Just il  -> Right (M.insert n (0:il) sm1)
         Nothing -> Right (M.insert n [0] sm1)
 
+{- | `stashArr` stashes arrays in the same way as variables are stashed.
+
+I extrapolated the behavior from `stashVar` to `stashArr` and had the default for a
+stashed array be an empty `Single` array with a size of one. I am not sure if this is
+correct since it is much more difficult to guess the default value of a collection of
+infinite size, but it works so I guess it's fine.
+-}
 stashArr :: Integer -> ArrMem -> M.Map Integer [Array] -> Either (World, Error) (M.Map Integer [Array])
 stashArr n m1 sm1 = case M.lookup n m1 of
     Just var -> case M.lookup n sm1 of
