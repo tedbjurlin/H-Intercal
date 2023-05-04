@@ -6,12 +6,12 @@ You shouldn't. But if you really want to, see below.
 
 H-Intercal requires the following packages:
 
-megaparsec
-containers
-parser-combinators
-split
-random
-cmdargs
+megaparsec,
+containers,
+parser-combinators,
+split,
+random,
+and cmdargs
 
 These packages should be installed automatically by stack, but the list is included just in case.
 
