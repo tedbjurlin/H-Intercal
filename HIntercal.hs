@@ -872,9 +872,9 @@ interpStmtOp (Stash el) w b (s:p1) p2 idx = stashExpList w el s p1
     `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx + 1)
 interpStmtOp (Retrieve el) w b (s:p1) p2 idx = retrieveExpList w el s p1
     `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx+1)
-interpStmtOp (Ignore el) w b (s:p1) p2 idx = ignoreVarList w el s p1
+interpStmtOp (Ignore el) w b (s:p1) p2 idx = setIgnoreVarList w el s p1 True
     `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx+1)
-interpStmtOp (Remember el) w b (s:p1) p2 idx = rememberVarList w el s p1
+interpStmtOp (Remember el) w b (s:p1) p2 idx = setIgnoreVarList w el s p1 False
     `composeIO` \w1 -> interpProg w1 b p1 (p2++[s]) (idx+1)
 
 {- | The following two operations take a list of gerunds, and call `setAbstainGerundList`
@@ -1016,7 +1016,7 @@ retrieveArray w p (Multi (l1:_) m) (idx:idl) =
     else getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 retrieveArray w p _ _ = getErrStmt w p >>= \stmt -> Left (w, Err241InvArrDim stmt)
 
-{- | `stashExpList` calls `stashExp` on the correct memory for the type of each variable
+{- | `stashExpList` calls `stashVar` or `stashArr` on the correct memory for the type of each variable
 in the give list of variables.
 -}
 stashExpList :: World -> [Exp] -> Stmt -> Prog -> Either (World, Error) World
@@ -1077,6 +1077,10 @@ stashArr n m1 sm1 = case M.lookup n m1 of
         Just il  -> Right (M.insert n (Single 1 M.empty:il) sm1)
         Nothing -> Right (M.insert n [Single 1 M.empty] sm1)
 
+{- | `retrieveExpList` calls `retrieveVar` on each item in the given list. Note that there
+is only one function for retriving since there is not difference between retrieving a
+variable or array.
+-}
 retrieveExpList :: World -> [Exp] -> Stmt -> Prog -> Either (World, Error) World
 retrieveExpList w [] _ _ = Right w
 retrieveExpList (W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) m3 (I im1 im2 iam1 iam2) ns) (Var16 n:ls) s p =
@@ -1100,6 +1104,16 @@ retrieveExpList (W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) m3 (I im1 im2 iam1 ia
             ls s p
 retrieveExpList w _ s p = getErrStmt w p >>= \st -> Left (w, Err000Undecode s st)
 
+{- | `retriveVar` retrives a variable from the stash stack and inserts it into the var
+memory.
+
+There is some ambiguity around retreive in the Intercal reference manual, specifically
+around whether ignore should apply to retrieve. In classic Intercal fashion, every current
+Intercal compiler handles this ambiguity differently. My compiler simply does nothing if
+a variable to be retrieved is currently ignored. No entries are removed from the stack
+and the ignored variable is not changed. This differs from the other compilers, who's
+behavior can be found in the C-Intercal docs.
+-}
 retrieveVar :: World -> Prog -> Integer -> M.Map Integer [b] -> M.Map Integer b -> IgnMem -> Either (World, Error) (M.Map Integer b, M.Map Integer [b])
 retrieveVar w p n sm1 m1 im1 = 
     if fromMaybe False (M.lookup n im1)
@@ -1107,85 +1121,70 @@ retrieveVar w p n sm1 m1 im1 =
     else case M.lookup n sm1 of
         Just (var:il) -> Right (M.insert n var m1, M.insert n il sm1)
         Just []       -> getErrStmt w p >>= \s -> Left (w, Err436NotStashed s)
-        Nothing  -> getErrStmt w p >>= \s -> Left (w, Err436NotStashed s) -- doesn't check for ignored vars?
+        Nothing  -> getErrStmt w p >>= \s -> Left (w, Err436NotStashed s)
 
-ignoreVarList :: World -> [Exp] -> Stmt -> Prog -> Either (World, Error) World -- can be combined with remember
-ignoreVarList w [] _ _ = Right w
-ignoreVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Var16 n:el) s p =
-    ignoreVarList (W v st m3 (I (M.insert n True im1) im2 iam1 iam2) ns) el s p
-ignoreVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Var32 n:el) s p =
-    ignoreVarList (W v st m3 (I im1 (M.insert n True im2) iam1 iam2) ns) el s p
-ignoreVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Array16 n:el) s p =
-    ignoreVarList (W v st m3 (I im1 im2 (M.insert n True iam1) iam2) ns) el s p
-ignoreVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Array32 n:el) s p =
-    ignoreVarList (W v st m3 (I im1 im2 iam1 (M.insert n True iam2)) ns) el s p
-ignoreVarList w _ s p = getErrStmt w p
+{- | `setIgnoreVarList` sets the boolean value of whether each variable in the given list
+is ignored in the ingore memory.
+-}
+setIgnoreVarList :: World -> [Exp] -> Stmt -> Prog -> Bool -> Either (World, Error) World -- can be combined with remember
+setIgnoreVarList w [] _ _ _ = Right w
+setIgnoreVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Var16 n:el) s p b =
+    setIgnoreVarList (W v st m3 (I (M.insert n b im1) im2 iam1 iam2) ns) el s p b
+setIgnoreVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Var32 n:el) s p b =
+    setIgnoreVarList (W v st m3 (I im1 (M.insert n b im2) iam1 iam2) ns) el s p b
+setIgnoreVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Array16 n:el) s p b =
+    setIgnoreVarList (W v st m3 (I im1 im2 (M.insert n b iam1) iam2) ns) el s p b
+setIgnoreVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Array32 n:el) s p b =
+    setIgnoreVarList (W v st m3 (I im1 im2 iam1 (M.insert n b iam2)) ns) el s p b
+setIgnoreVarList w _ s p _ = getErrStmt w p
     >>= \stmt -> Left (w, Err000Undecode s stmt)
 
-rememberVarList :: World -> [Exp] -> Stmt -> Prog -> Either (World, Error) World
-rememberVarList w [] _ _ = Right w
-rememberVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Var16 n:el) s p =
-    rememberVarList (W v st m3 (I (M.insert n False im1) im2 iam1 iam2) ns) el s p
-rememberVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Var32 n:el) s p =
-    rememberVarList (W v st m3 (I im1 (M.insert n False im2) iam1 iam2) ns) el s p
-rememberVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Array16 n:el) s p =
-    rememberVarList (W v st m3 (I im1 im2 (M.insert n False iam1) iam2) ns) el s p
-rememberVarList (W v st m3 (I im1 im2 iam1 iam2) ns) (Array32 n:el) s p =
-    rememberVarList (W v st m3 (I im1 im2 iam1 (M.insert n False iam2)) ns) el s p
-rememberVarList w _ s p = getErrStmt w p
-    >>= \stmt -> Left (w, Err000Undecode s stmt)
-
+{- | `setAbstainGerundList` iterates through a list of `Gerund`s and calls
+`setAbstainGerund` on each one.
+-}
 setAbstainGerundList :: [Gerund] -> Bool -> Prog -> Prog -> (Prog, Prog)
 setAbstainGerundList [] _ p1 p2 = (p1, p2)
 setAbstainGerundList (g:gl) b p1 p2 = setAbstainGerundList gl b (setAbstainGerund g b p1 [])
     (setAbstainGerund g b p2 [])
 
+{- | `setAbstainGerund` iterates through the given program and sets the Not qunatifier to
+the given boolean for each matching statement.
+-}
 setAbstainGerund :: Gerund -> Bool -> Prog -> Prog -> Prog
 setAbstainGerund _ _ [] p2 = p2
 setAbstainGerund Forgetting b (Stmt l _ p (Forget el) str:p1) p2 =
     setAbstainGerund Forgetting b p1 (p2++[Stmt l b p (Forget el) str])
-
 setAbstainGerund Resuming b (Stmt l _ p (Resume e) str:p1) p2 =
     setAbstainGerund Resuming b p1 (p2++[Stmt l b p (Resume e) str])
-
 setAbstainGerund Stashing b (Stmt l _ p (Stash el) str:p1) p2 =
     setAbstainGerund Stashing b p1 (p2++[Stmt l b p (Stash el) str])
-
 setAbstainGerund Retrieving b (Stmt l _ p (Retrieve el) str:p1) p2 =
     setAbstainGerund Retrieving b p1 (p2++[Stmt l b p (Retrieve el) str])
-
 setAbstainGerund Ignoring b (Stmt l _ p (Ignore el) str:p1) p2 =
     setAbstainGerund Ignoring b p1 (p2++[Stmt l b p (Ignore el) str])
-
 setAbstainGerund Remembering b (Stmt l _ p (Remember el) str:p1) p2 =
     setAbstainGerund Remembering b p1 (p2++[Stmt l b p (Remember el) str])
-
 setAbstainGerund Abstaining b (Stmt l _ p (Abstain el) str:p1) p2 =
     setAbstainGerund Abstaining b p1 (p2++[Stmt l b p (Abstain el) str])
 setAbstainGerund Abstaining b (Stmt l _ p (AbstainL la) str:p1) p2 =
     setAbstainGerund Abstaining b p1 (p2++[Stmt l b p (AbstainL la) str])
-
 setAbstainGerund Reinstating b (Stmt l _ p (Reinstate el) str:p1) p2 =
     setAbstainGerund Reinstating b p1 (p2++[Stmt l b p (Reinstate el) str])
 setAbstainGerund Reinstating b (Stmt l _ p (ReinstateL la) str:p1) p2 =
     setAbstainGerund Reinstating b p1 (p2++[Stmt l b p (ReinstateL la) str])
-
 setAbstainGerund Inputting b (Stmt l _ p (Input el) str:p1) p2 =
     setAbstainGerund Inputting b p1 (p2++[Stmt l b p (Input el) str])
-
 setAbstainGerund Outputting b (Stmt l _ p (Output el) str:p1) p2 =
     setAbstainGerund Outputting b p1 (p2++[Stmt l b p (Output el) str])
-
 setAbstainGerund Calculating b (Stmt l _ p (Calc e el) str:p1) p2 =
     setAbstainGerund Calculating b p1 (p2++[Stmt l b p (Calc e el) str])
 setAbstainGerund Calculating b (Stmt l _ p (CalcDim e el) str:p1) p2 =
     setAbstainGerund Calculating b p1 (p2++[Stmt l b p (CalcDim e el) str])
-
 setAbstainGerund Nexting b (Stmt l _ p (Next el) str:p1) p2 =
     setAbstainGerund Nexting b p1 (p2++[Stmt l b p (Next el) str])
-
 setAbstainGerund g b (s:p1) p2 = setAbstainGerund g b p1 (p2++[s])
 
+-- | `abstainLabel` sets the NOT quantifier of the given label to True.
 abstainLabel :: World -> Integer -> Prog -> Prog -> Either (World, Error) Prog
 abstainLabel (W v st m3 iv ns) l p nx = case M.lookup l m3 of
     Just idx -> case splitAt (fromIntegral idx) p of
@@ -1197,6 +1196,10 @@ abstainLabel (W v st m3 iv ns) l p nx = case M.lookup l m3 of
     Nothing -> getErrStmt (W v st m3 iv []) nx
                 >>= \stmt -> Left (W v st m3 iv ns, Err139UndefARL stmt)
 
+{- | `reinstateLabel` sets the NOT quantifier of the given label to False. It would be the
+same function as `abstainLabel` but `GiveUp` statements can be abstained but not
+reinstated.
+-}
 reinstateLabel :: World -> Integer -> Prog -> Prog -> Either (World, Error) Prog
 reinstateLabel (W v st m3 iv ns) l p nx = case M.lookup l m3 of
     Just idx -> case splitAt (fromIntegral idx) p of
@@ -1209,6 +1212,8 @@ reinstateLabel (W v st m3 iv ns) l p nx = case M.lookup l m3 of
     Nothing -> getErrStmt (W v st m3 iv []) nx
                 >>= \stmt -> Left (W v st m3 iv ns, Err139UndefARL stmt)
 
+{- | 
+-}
 interpExpList :: World -> Prog -> [Exp] -> Either (World, Error) [Integer]
 interpExpList _ _ []     = Right []
 interpExpList w p (e:el) = interpExp w p e >>= \(i, _) -> interpExpList w p el >>= \il -> Right (i:il)
