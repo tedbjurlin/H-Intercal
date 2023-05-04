@@ -1444,6 +1444,12 @@ getStack (W v st m3 iv ns) 0 = Right (W v st m3 iv ns, 0)
 getStack (W v st m3 iv (n2:s)) 1 = Right (W v st m3 iv s, n2)
 getStack (W v st m3 iv (_:s)) n = getStack (W v st m3 iv s) (n-1)
 
+{- | `interpExp` pattern matches all of the types of expressions and calls their
+respective interpreting functions. Some of the more complex functions must have multiple
+sub-expressions interpreted. All functions that interpret and expression pass out a `Bool`
+value that indicates whether a value is 16 or 32 bits. This is important for unary
+operations.
+-}
 interpExp :: World -> Prog -> Exp -> Either (World, Error) (Integer, Bool)
 interpExp (W (V m1 m2 am1 am2) st m3 iv ns) p (Var16 n) = case M.lookup n m1 of
     Just i1  -> Right (i1, False)
@@ -1477,6 +1483,12 @@ interpExp w p (Una u e) = interpExp w p e >>= \(i, b) -> Right (interpUOp u i b,
 interpExp w p (Bin bop e1 e2) = interpExp w p e1
     >>= \(i1, b1) -> interpExp w p e2 >>= \(i2, b2) -> interpBinOp bop b1 b2 w p i1 i2
 
+{- | `interpUOp` takes a value, and operator and a boolean indicating whether the value is
+32-bits. True indicates 32-bits, while false indicates 16. Intercal unary operations
+consist of calling binary bitwise boolean operations, with the operands being the value
+and the value right shifted one bit. This right shift must wrap around, which is why it is
+important that we know whether the value is 32 or 16 bits.
+-}
 interpUOp :: UOp -> Integer -> Bool -> Integer
 interpUOp AND n False = n .&. shiftR n 16
 interpUOp OR n  False = n .|. shiftR n 16
@@ -1485,10 +1497,17 @@ interpUOp AND n True  = n .&. shiftR n 32
 interpUOp OR n  True  = n .|. shiftR n 32
 interpUOp XOR n True  = n `xor` shiftR n 32
 
+{- | `interpBinOp` calls either the `select` or `interleave` functions on its operands.
+In the case of the select operation, the result is 16-bits if it is small enough,
+otherwise it is 32-bits. However, in interleave, the result is always 32-bits.
+-}
 interpBinOp :: BOp -> Bool -> Bool -> World -> Prog -> Integer -> Integer -> Either (World, Error) (Integer, Bool)
 interpBinOp Sel _ _ w p i1 i2         = (\i -> (i, i > 65_535)) <$> select w p i1 i2
 interpBinOp Ilv b1 b2 w p i1 i2 = (, True) <$> interleave w p i1 i2 b1 b2
 
+{- | `interleave` converts the operands to a list of bits, then calls `interleaveH` on the
+lists, and converts them back from bits.
+-}
 interleave :: World -> Prog -> Integer -> Integer -> Bool -> Bool -> Either (World, Error) Integer
 interleave w p i1 i2 b1 b2
     | not b1 && not b2 = Right (convertFromBit
@@ -1498,11 +1517,19 @@ interleave w p i1 i2 b1 b2
         32)
     | otherwise = getErrStmt w p >>= \stmt -> Left (w, Err275WrongSpot stmt)
 
+{- | `interleaveH` constructs a new list that is made by alternating bits from the two
+inputs. It is designed on the assumption that any function calling it will ensure that
+the two inputs are the same length.
+-}
 interleaveH :: [Integer] -> [Integer] -> [Integer]
 interleaveH [] _              = []
 interleaveH _ []              = []
 interleaveH (i1:il1) (i2:il2) = i1:i2:interleaveH il1 il2
 
+{- | `select` will take two inputs, insure that they are valid values, and then convert
+them to 32-bit integers and pass them to `selectH`. `pad` is used to pad the result to
+32 bits so that `convertFromBit` will work properly.
+-}
 select :: World -> Prog -> Integer -> Integer -> Either (World, Error) Integer
 select w p i1 i2
     | i1 >= 4_294_967_296 || i2 >= 4_294_967_296 = getErrStmt w p
@@ -1515,34 +1542,53 @@ select w p i1 i2
             32)
         32)
 
+{- | `selectH` iterates through the pair of lists of bits, and takes every bit from the
+first that is one in the second. It returns a list of only the selected bits. It also
+expects two lists of the same length.
+-}
 selectH :: [Integer] -> [Integer] -> [Integer]
 selectH [] _ = []
 selectH _ [] = []
 selectH (i1:il1) (1:il2) = i1:selectH il1 il2
 selectH (_:il1) (_:il2) = selectH il1 il2
 
+-- | `pad` calls `padH` with the input list duplicated.
 pad :: [Integer] -> Integer -> [Integer]
 pad il = padH il il
 
+{- | `padH` takes two input lists and an `Integer` indicating how long the list should be
+padded to. It expects a result that is less than the intended length. One input list is
+modified, and one stays to be appended to the end of the padded 0s.
+-}
 padH :: [Integer] -> [Integer] -> Integer -> [Integer]
 padH [] il2 0      = il2
 padH [] il2 n      = 0:padH [] il2 (n-1)
 padH (_:il1) il2 n = padH il1 il2 (n-1)
 
+{- | Because the `Data.Bits` library does not include bitshifts with wrapping, I had to
+write my own. It uses basic math to shift the number 1 bit to the right, then adds the
+wrapped bit only if it was present in the original.
+-}
 shiftR :: Integer -> Integer -> Integer
 shiftR i p = ((2^(p-1))*(i `mod` 2)) + i `div` 2
 
+{- | `convertToBit` converts an integer to a list of bits with a length n. It expects the
+given integer to be less than or equal to n bits.
+-}
 convertToBit :: Integer -> Integer -> [Integer]
 convertToBit i p
     | i < 0 || p <= 0 = []
     | otherwise      = (i `div` (2^(p-1))) : convertToBit (i `mod` (2^(p-1))) (p-1)
 
+{- | `convertFromBit` does the oposite of convert from bit. It needs the length of the
+given list so it can properly calculate which place the current bit is in.
+-}
 convertFromBit :: [Integer] -> Integer -> Integer
 convertFromBit [] _     = 0
 convertFromBit (1:il) p = (2^(p-1)) + convertFromBit il (p-1)
 convertFromBit (_:il) p = convertFromBit il (p-1)
 
-
+-- | `initWorld` builds an empty world with the memory of line labels to lines.
 initWorld :: Mem -> World
 initWorld ls =
     W
@@ -1552,6 +1598,10 @@ initWorld ls =
         (I M.empty M.empty M.empty M.empty)
         []
 
+{- | `formatWorld` converts the variables and stashes that have values to strings,
+seperated by newlines using `unlines`. This function is not currently used but is useful
+for testing.
+-}
 formatWorld :: World -> String
 formatWorld (W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) _ _ _) = unlines
     $  ["Variables:"]
@@ -1565,10 +1615,11 @@ formatWorld (W (V m1 m2 am1 am2) (S sm1 sm2 sam1 sam2) _ _ _) = unlines
     ++ map (formatVar ",") (M.assocs sam1)
     ++ map (formatVar ";") (M.assocs sam2)
 
-
+-- | `formatVar` pretty prints the value of a variable
 formatVar :: Show a => String -> (Integer, a) -> String
 formatVar pre (x,v) = pre ++ show x ++ " -> " ++ show v
 
+-- | `showError` pretty prints an error using the standard intercal structure.
 showError :: Error -> String
 showError e = (\(n, err, s) -> case s of
     Just stmt -> "ICL"++n++"I "++err
@@ -1578,6 +1629,10 @@ showError e = (\(n, err, s) -> case s of
     Nothing -> "ICL"++n++"I "++err
         ++"\n        CORRECT SOURCE AND RESUBMIT") (errVals e)
 
+{- | `errVals` pattern matches the error to determing the string that should be printed.
+It also determines the error code and gives the next statement pretty printed if it
+exists.
+-}
 errVals :: Error -> (String, String, Maybe String)
 errVals (Err000Undecode s1 s2) = ("000", prettyStmt s1, Just (prettyStmt s2))
 errVals (Err017InvConst s) =
@@ -1613,14 +1668,30 @@ errVals Err632TooResume =
 errVals Err633ProgEnd = ("633", "PROGRAM FELL OFF THE EDGE", Nothing)
 errVals Err774RndBug = ("774", "RANDOM COMPILER ERROR", Nothing)
 
+{- | The string for a statement is recorded in the parser due to the variety of methods of
+writing an Intercal statement. If this was not done, the printed next statement would not
+necessarily match the one in the program. As such, all that is needed to pretty print a
+statement is to strip the recorded statement of newlines and whitespace, and return it.
+-}
 prettyStmt :: Stmt -> String
 prettyStmt (Cmnt _ _ str)     = rstrip str
 prettyStmt (Stmt _ _ _ _ str) = rstrip str
 
--- https://stackoverflow.com/questions/3373327/stripping-newlines-in-haskell
+{- | `rstrip` strips a string of trailing whitespace and newlines. It was taken from this
+stack overflow post:
+https://stackoverflow.com/questions/3373327/stripping-newlines-in-haskell
+-}
 rstrip :: String -> String
 rstrip = reverse . dropWhile isSpace . reverse
 
+{- | `run` is runs the compiler on the file at `filename`. If a magic number line number
+is detected while checking the program, it will attempt to import the standard library,
+which should be at "stdlib.i". If it fails to find it, it will throw an error. Otherwise,
+it will append it to the end of the file, and rerun the parser, checker, and interpreter.
+
+The only time `run` prints anything is in the case of an error. All output printing is
+handled by the interpreter.
+-}
 run :: String -> Bool -> IO ()
 run fileName b = do
   hSetBuffering stdout NoBuffering
@@ -1650,17 +1721,22 @@ run fileName b = do
                 Right _ -> return ()
                 Left (_, err) -> putStrLn (showError err)
 
+{- | The `cmdArgs` library is used to identify command line flags. In this case, we only
+have two: the name of the file and a boolean to turn off random compiler errors.
+-}
 data Flags = Flags {
     filename               :: String
     , randomCompilerErrors :: Bool
     } deriving (Show, Data, Typeable)
 
+-- | `options` is the function used by `cmdArgs` to print a help msg and identify args.
 options :: Flags
 options = Flags {
     filename = def &= help "File name of Intercal program" &= typ "FILE"
     , randomCompilerErrors = True &= help "Set to False to turn off random compiler errors" &= typ "BOOL"
     } &= summary "H-Intercal"
 
+-- | `main` is the hook for cabal to turn the program into an executable.
 main :: IO ()
 main = do
     flags <- cmdArgs options
