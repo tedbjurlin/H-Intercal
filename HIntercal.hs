@@ -1212,12 +1212,17 @@ reinstateLabel (W v st m3 iv ns) l p nx = case M.lookup l m3 of
     Nothing -> getErrStmt (W v st m3 iv []) nx
                 >>= \stmt -> Left (W v st m3 iv ns, Err139UndefARL stmt)
 
-{- | 
+{- | `interpExpList` calls `interpExp` on each expression in the list of expressions.
+It then compiles them into a list of integers and returns it.
 -}
 interpExpList :: World -> Prog -> [Exp] -> Either (World, Error) [Integer]
 interpExpList _ _ []     = Right []
 interpExpList w p (e:el) = interpExp w p e >>= \(i, _) -> interpExpList w p el >>= \il -> Right (i:il)
 
+{- | `takeInputList` takes input for a list of variables. Note that it is an IO type
+becuase taking input is not pure. The `takeInputVar` and `takeInputArr` functions are used
+to get input for individual variables.
+-}
 takeInputList :: World -> Prog -> [Exp] -> IO (Either (World, Error) World)
 takeInputList w _ [] = return (Right w)
 takeInputList (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p (Var16 n:es) = do
@@ -1252,50 +1257,88 @@ takeInputList (W (V m1 m2 am1 am2) st m3 (I im1 im2 iam1 iam2) ns) p (Sub (Array
                 es
 takeInputList w p _ = getErrStmt w p `composeIO` \stmt -> return (Left (w, Err017InvConst stmt))
 
+{- | `takeInputVar` takes input for a single variable. It uses the `getLine` IO function,
+which returns an `IO String` representing a single line of input in the stdIn. Input will
+be skipped if the variable is ignored, and the `parseInput` function is used to parse the
+line into an `Integer` or raise an error.
+-}
 takeInputVar :: World -> Prog -> Bool -> Integer -> Mem -> IgnMem -> IO (Either (World, Error) (World, Mem))
-takeInputVar (W v st m3 iv ns) p vt n m im = do
-    inp <- getLine
-    if fromMaybe False (M.lookup n im)
+takeInputVar (W v st m3 iv ns) p vt n m im = if fromMaybe False (M.lookup n im)
     then return (Right (W v st m3 iv ns, m))
-    else return (parseInput (W v st m3 iv ns) p inp
-        >>= \num -> if vt   then if num < 65_536
-                then Right (W v st m3 iv ns, M.insert n num m)
-                else getErrStmt (W v st m3 iv ns) p
-                    >>= \stmt -> Left (W v st m3 iv ns, Err275WrongSpot stmt)
-            else if num < 4_294_967_295
-                then Right (W v st m3 iv ns, M.insert n num m)
-                else getErrStmt (W v st m3 iv ns) p
-                    >>= \stmt -> Left (W v st m3 iv ns, Err533TooBig stmt))
-
-takeInputArr :: World -> Prog -> Bool -> Integer -> [Integer] -> ArrMem -> IgnMem -> IO (Either (World, Error) (World, ArrMem))
-takeInputArr (W v st m3 iv ns) p vt n nl m im = do
-    inp <- getLine
-    if fromMaybe False (M.lookup n im)
-    then return (Right (W v st m3 iv ns, m))
-    else return (parseInput (W v st m3 iv ns) p inp
-        >>= \num -> case M.lookup n m of
-            Just arr -> if vt
-                then if num < 65_536
-                    then insertArray (W v st m3 iv ns) p arr num nl
-                        >>= \narr -> Right (W v st m3 iv ns, M.insert n narr m)
+    else do
+        inp <- getLine
+        return (parseInput (W v st m3 iv ns) p inp
+            >>= \num -> if vt   then if num < 65_536
+                    then Right (W v st m3 iv ns, M.insert n num m)
                     else getErrStmt (W v st m3 iv ns) p
                         >>= \stmt -> Left (W v st m3 iv ns, Err275WrongSpot stmt)
-                else if num < 42_94_967_295
-                    then insertArray (W v st m3 iv ns) p arr num nl
-                        >>= \narr -> Right (W v st m3 iv ns, M.insert n narr m)
+                else if num < 4_294_967_295
+                    then Right (W v st m3 iv ns, M.insert n num m)
                     else getErrStmt (W v st m3 iv ns) p
-                        >>= \stmt -> Left (W v st m3 iv ns, Err533TooBig stmt)
-            Nothing  -> getErrStmt (W v st m3 iv ns) p
-                >>= \stmt -> Left (W v st m3 iv ns, Err200InvVar stmt))
+                        >>= \stmt -> Left (W v st m3 iv ns, Err533TooBig stmt))
 
+{- | `takeInputArr` does the same thing as `takeInputVar` but takes input and inserts
+it into an array. Otherwise it is structured the same.
+-}
+takeInputArr :: World -> Prog -> Bool -> Integer -> [Integer] -> ArrMem -> IgnMem -> IO (Either (World, Error) (World, ArrMem))
+takeInputArr (W v st m3 iv ns) p vt n nl m im = if fromMaybe False (M.lookup n im)
+    then return (Right (W v st m3 iv ns, m))
+    else do
+        inp <- getLine
+        return (parseInput (W v st m3 iv ns) p inp
+            >>= \num -> case M.lookup n m of
+                Just arr -> if vt
+                    then if num < 65_536
+                        then insertArray (W v st m3 iv ns) p arr num nl
+                            >>= \narr -> Right (W v st m3 iv ns, M.insert n narr m)
+                        else getErrStmt (W v st m3 iv ns) p
+                            >>= \stmt -> Left (W v st m3 iv ns, Err275WrongSpot stmt)
+                    else if num < 42_94_967_295
+                        then insertArray (W v st m3 iv ns) p arr num nl
+                            >>= \narr -> Right (W v st m3 iv ns, M.insert n narr m)
+                        else getErrStmt (W v st m3 iv ns) p
+                            >>= \stmt -> Left (W v st m3 iv ns, Err533TooBig stmt)
+                Nothing  -> getErrStmt (W v st m3 iv ns) p
+                    >>= \stmt -> Left (W v st m3 iv ns, Err200InvVar stmt))
+
+{- | The `parseInput` function splits the input by spaces and parses the list using
+`parseInputNums`.
+-}
 parseInput :: World -> Prog -> String -> Either (World, Error) Integer
 parseInput w p [] = getErrStmt w p >>= \stmt -> Left (w, Err562NoInput stmt)
 parseInput w p s  = parseInputNums w p (splitOn " " s) 0
 
+{- | `parseInputNums` pattern matches each possible input number and adds it as the next
+digit of the integer. If the word does not match a possible digit, it will raise an error.
+-}
+parseInputNums :: World -> Prog -> [String] -> Integer -> Either (World, Error) Integer
+parseInputNums _ _ [] i = Right i
+parseInputNums w p ("":s) i = parseInputNums w p s i
+parseInputNums w p ("OH":s) i = parseInputNums w p s (i*10)
+parseInputNums w p ("ZERO":s) i = parseInputNums w p s (i*10)
+parseInputNums w p ("ONE":s) i = parseInputNums w p s (i*10+1)
+parseInputNums w p ("TWO":s) i = parseInputNums w p s (i*10+2)
+parseInputNums w p ("THREE":s) i = parseInputNums w p s (i*10+3)
+parseInputNums w p ("FOUR":s) i = parseInputNums w p s (i*10+4)
+parseInputNums w p ("FIVE":s) i = parseInputNums w p s (i*10+5)
+parseInputNums w p ("SIX":s) i = parseInputNums w p s (i*10+6)
+parseInputNums w p ("SEVEN":s) i = parseInputNums w p s (i*10+7)
+parseInputNums w p ("EIGHT":s) i = parseInputNums w p s (i*10+8)
+parseInputNums w p ("NINE":s) i = parseInputNums w p s (i*10+9)
+parseInputNums w p (str:_) _ = getErrStmt w p >>= \stmt -> Left (w, Err579InvInput str stmt)
+
+{- | `writeOutputList` calls `writeOutput` on each item the given expression list, then
+composes the resulting IO with the next item of the list using `>>`.
+-}
 writeOutputList :: World -> Prog -> [Exp] -> IO (Either (World, Error) ())
 writeOutputList _ _ []     = return (Right ())
 writeOutputList w p (e:el) = writeOutput w p e `composeIO` (\out -> out >> writeOutputList w p el)
 
+{- | `writeOutput` will convert the value of a variable or subscripted array to the output
+format as a string using `showOutput`, and put it to stdout using `putStrLn`. The stdout
+is then flushed with `hFlush`. I don't know why stdout needs to be flushed, but it avoids
+and error where nothing is printed until the program finishes execution.
+-}
 writeOutput :: World -> Prog -> Exp -> Either (World, Error) (IO ())
 writeOutput (W (V m1 m2 am1 am2) st m3 iv ns) p (Var16 n) = case M.lookup n m1 of
     Just i1 -> Right $ putStrLn (showOutput i1 i1) >> hFlush stdout
@@ -1324,7 +1367,18 @@ writeOutput (W (V m1 m2 am1 am2) st m3 iv ns) p (Sub (Array32 n) el) = case M.lo
 writeOutput _ _ (Const i1) = Right $ putStrLn (showOutput i1 i1) >> hFlush stdout
 writeOutput w p _ = getErrStmt w p >>= \stmt -> Left (w, Err200InvVar stmt)
 
+{- | `showOutput` is essentially a function to convert an integer to a roman numeral
+(because all Intercal output is in roman numerals of course). Roman numerals are extended
+to 4,000,000,000 to allow for 32-bit integers, and lowercase and overlines are used to
+indicate higher numbers.
 
+There are a number of ways to convert integers to roman numeral, including some using
+radixes and lookup strings, but considering that I was doing extended roman numerals,
+it seemed like the most effective and efficient way to do it was to use a recursive
+function with guards. It uses two `Integers`: one to keep track of the current value, with
+all of the converted roman numerals subtracted, and one for the original, for deciding
+whether to use III or VI or the higher equivalents.
+-}
 showOutput :: Integer -> Integer -> String
 showOutput i n
     | n == 0             = "\x305"
@@ -1374,26 +1428,16 @@ showOutput i n
     | i >= 1             = "I" ++ showOutput (i - 1) n
     | otherwise          = ""
 
-parseInputNums :: World -> Prog -> [String] -> Integer -> Either (World, Error) Integer
-parseInputNums _ _ [] i = Right i
-parseInputNums w p ("":s) i = parseInputNums w p s i
-parseInputNums w p ("OH":s) i = parseInputNums w p s (i*10)
-parseInputNums w p ("ZERO":s) i = parseInputNums w p s (i*10)
-parseInputNums w p ("ONE":s) i = parseInputNums w p s (i*10+1)
-parseInputNums w p ("TWO":s) i = parseInputNums w p s (i*10+2)
-parseInputNums w p ("THREE":s) i = parseInputNums w p s (i*10+3)
-parseInputNums w p ("FOUR":s) i = parseInputNums w p s (i*10+4)
-parseInputNums w p ("FIVE":s) i = parseInputNums w p s (i*10+5)
-parseInputNums w p ("SIX":s) i = parseInputNums w p s (i*10+6)
-parseInputNums w p ("SEVEN":s) i = parseInputNums w p s (i*10+7)
-parseInputNums w p ("EIGHT":s) i = parseInputNums w p s (i*10+8)
-parseInputNums w p ("NINE":s) i = parseInputNums w p s (i*10+9)
-parseInputNums w p (str:_) _ = getErrStmt w p >>= \stmt -> Left (w, Err579InvInput str stmt)
-
+{- | `getErrStmt` either returns the next statement in the program or an error. It is used
+to get the next statement for an error, while being safe for the end of the program.
+-}
 getErrStmt :: World -> Prog -> Either (World, Error) Stmt
 getErrStmt w []    = Left (w, Err633ProgEnd)
 getErrStmt _ (s:_) = Right s
 
+{- | `getStack` gets the nth item of the nexting stack and returns it, raisng an error if
+it passes the end of the stack. It removes all items before the nth item from the stack.
+-}
 getStack :: World -> Integer -> Either (World, Error) (World, Integer)
 getStack (W v st m3 iv []) _ = Left (W v st m3 iv [], Err632TooResume)
 getStack (W v st m3 iv ns) 0 = Right (W v st m3 iv ns, 0)
