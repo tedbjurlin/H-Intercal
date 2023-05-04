@@ -19,7 +19,10 @@ common warnings
 executable H-Intercal
     import:           warnings
     main-is:          HIntercal.hs
-    -- other-modules:
+    other-modules:
+        HIntercalTypes,
+        HIntercalParser,
+        HIntercalCheck
     -- other-extensions:
     build-depends:
         base ^>=4.16.4.0,
