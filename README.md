@@ -2,11 +2,11 @@
 
 ### Project Concept
 
-This Intercal-72 compiler is my final project submission for the 2023 CSCI-360 Programming Languages class at Hendrix College.
+This Intercal-72 interpreter is my final project submission for the 2023 CSCI-360 Programming Languages class at Hendrix College.
 
-The intent of this project is to build a functioning Intercal-72 compiler in Haskell. Intercal-72 is the first well-known esolang, and was designed with one core philosophy in mind: To be as different from every other currently existing programming language as possible. As such, the only language feature that it shares with its contemporaries is variable assignment. To find out more about Intercal-72 see the [Reference Manual](https://3e8.org/pub/intercal.pdf).
+The intent of this project is to build a functioning Intercal-72 interpreter in Haskell. Intercal-72 is the first well-known esolang, and was designed with one core philosophy in mind: To be as different from every other currently existing programming language as possible. As such, the only language feature that it shares with its contemporaries is variable assignment. To find out more about Intercal-72 see the [Reference Manual](https://3e8.org/pub/intercal.pdf).
 
-This compiler is intended implement Intercal-72 as accurately as possible, although some differences are unavoidable due to the ambiguous nature of the Reference Manual and the limitations of Haskell as a language.
+This interpreter is intended implement Intercal-72 as accurately as possible, although some differences are unavoidable due to the ambiguous nature of the Reference Manual and the limitations of Haskell as a language.
 
 Example programs can be found in the [examples](examples/) directory. See [INSTALLING](INSTALLING.md) for more information on how to install H-Intercal and run the sample programs.
 
