@@ -12,7 +12,7 @@ Example programs can be found in the [examples](examples/) directory. See [INSTA
 
 ### Interesting Features
 
-Intercal-72 has a variety of interesting feature (a byproduct of the fact that nearly every feature is unique), but an unexpectedly complex one is the existance of unary boolean operators.
+Intercal-72 has a variety of interesting features (a byproduct of the fact that nearly every feature is unique), but an unexpectedly complex one is the existance of unary boolean operators.
 
 A unary boolean operator takes a single operand, and applies the boolean operation to every adjacent pair of bits, including the first and last. In practice, we can simply apply the operation as a bitwise operation to the operand and itself, bitshifted to the right by one.
 
